@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -35,8 +36,9 @@ func setCallbackCookie(w http.ResponseWriter, r *http.Request, name, value strin
 		Name:     name,
 		Value:    value,
 		MaxAge:   int(time.Hour.Seconds()),
-		Secure:   r.TLS != nil,
+		Secure:   true,
 		HttpOnly: true,
+		SameSite: http.SameSiteNoneMode,
 	}
 	http.SetCookie(w, c)
 }
@@ -62,6 +64,11 @@ func main() {
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// If the request is for the favicon, serve it and return
+		if r.URL.Path == "/favicon.ico" {
+			http.ServeFile(w, r, "path/to/your/favicon.ico")
+			return
+		}
 		state, err := randString(16)
 		if err != nil {
 			http.Error(w, "Internal error", http.StatusInternalServerError)
@@ -74,22 +81,44 @@ func main() {
 		}
 		setCallbackCookie(w, r, "state", state)
 		setCallbackCookie(w, r, "nonce", nonce)
+		fmt.Println(state)
 
-		http.Redirect(w, r, config.AuthCodeURL(state, oidc.Nonce(nonce)), http.StatusFound)
+		http.Redirect(w, r, config.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.SetAuthURLParam("prompt", "none"), oauth2.SetAuthURLParam("response_type", "code id_token token"), oauth2.SetAuthURLParam("response_mode", "form_post")), http.StatusFound)
 	})
 
+	// oauth2.SetAuthURLParam("response_type", "code id_token")
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		state, err := r.Cookie("state")
 		if err != nil {
 			http.Error(w, "state not found", http.StatusBadRequest)
 			return
 		}
-		if r.URL.Query().Get("state") != state.Value {
+
+		err = r.ParseForm()
+
+        if err != nil {
+            http.Error(w, "Unable to parse form", http.StatusBadRequest)
+            return
+        }
+
+		code := r.FormValue("code")
+		formState := r.FormValue("state")
+
+		id_token := r.FormValue("id_token")
+		fmt.Println("id_token: ", id_token)
+
+		access_token := r.FormValue("access_token")
+		fmt.Println("access_token: ", access_token)
+
+		fmt.Println("state from form: ", formState)
+		fmt.Println("state from cookie: ", state.Value)
+
+		if formState != state.Value {
 			http.Error(w, "state did not match", http.StatusBadRequest)
 			return
 		}
 
-		oauth2Token, err := config.Exchange(ctx, r.URL.Query().Get("code"))
+		oauth2Token, err := config.Exchange(ctx, code)
 		if err != nil {
 			http.Error(w, "Failed to exchange token: "+err.Error(), http.StatusInternalServerError)
 			return
